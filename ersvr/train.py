@@ -1,14 +1,457 @@
+# ERSVR: Real-time Video Super Resolution for Kaggle
+# Combines training and inference functionality in a single script
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import os
 import numpy as np
-from models.ersvr import ERSVR
-from dataset import VimeoDataset
-import torch.nn.functional as F
+import cv2
+import random
+import argparse
+import time
+from einops import rearrange
+
+# Check if running on Kaggle
+KAGGLE = os.environ.get('KAGGLE_KERNEL_RUN_TYPE', '')
+if KAGGLE:
+    # In Kaggle, the dataset is usually in a subdirectory of /kaggle/input
+    # Let's find the actual dataset directory
+    base_input = '/kaggle/input'
+    if os.path.exists(base_input):
+        input_dirs = [d for d in os.listdir(base_input) if os.path.isdir(os.path.join(base_input, d))]
+        if input_dirs:
+            # Use the first directory found, or look for common dataset names
+            for common_name in ['vimeo90k', 'vimeo-90k', 'video-dataset', 'dataset']:
+                if common_name in input_dirs:
+                    DATA_PATH = os.path.join(base_input, common_name)
+                    break
+            else:
+                DATA_PATH = os.path.join(base_input, input_dirs[0])
+        else:
+            DATA_PATH = base_input
+    else:
+        DATA_PATH = base_input
+    OUTPUT_PATH = '/kaggle/working'
+    print(f"Running on Kaggle, data path: {DATA_PATH}")
+else:
+    DATA_PATH = './archive'
+    OUTPUT_PATH = './checkpoints'
+    print("Running locally")
+
+# Model components
+class MBDModule(nn.Module):
+    """Multi-Branch Dilated Convolution Module"""
+    def __init__(self, in_channels, out_channels):
+        super(MBDModule, self).__init__()
+        
+        # Pointwise convolution for channel reduction
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        
+        # Parallel dilated convolutions with different dilation rates
+        self.dilated_convs = nn.ModuleList([
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, 
+                     padding=d, dilation=d) for d in [1, 2, 4]
+        ])
+        
+        # Final 1x1 convolution for feature fusion
+        self.fusion = nn.Conv2d(out_channels * 3, out_channels, kernel_size=1)
+        
+    def forward(self, x):
+        # Pointwise convolution
+        x = self.pointwise(x)
+        
+        # Apply parallel dilated convolutions
+        dilated_outputs = []
+        for conv in self.dilated_convs:
+            dilated_outputs.append(conv(x))
+        
+        # Concatenate all dilated outputs
+        x = torch.cat(dilated_outputs, dim=1)
+        
+        # Final fusion
+        x = self.fusion(x)
+        
+        return x
+
+class FeatureAlignmentBlock(nn.Module):
+    """Feature Alignment Block for processing concatenated frames"""
+    def __init__(self, in_channels=9, out_channels=64):
+        super(FeatureAlignmentBlock, self).__init__()
+        
+        # Initial feature extraction
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        # MBD module for feature refinement
+        self.mbd = MBDModule(out_channels, out_channels)
+        
+    def forward(self, x):
+        # Input shape: (B, 9, H, W) - concatenated frames
+        x = self.conv_layers(x)
+        x = self.mbd(x)
+        return x
+
+class SubpixelUpsampling(nn.Module):
+    """Subpixel Upsampling Module using PixelShuffle"""
+    def __init__(self, in_channels, scale_factor=2):
+        super(SubpixelUpsampling, self).__init__()
+        
+        self.scale_factor = scale_factor
+        self.conv = nn.Conv2d(
+            in_channels,
+            in_channels * (scale_factor ** 2),
+            kernel_size=3,
+            padding=1
+        )
+        self.pixel_shuffle = nn.PixelShuffle(scale_factor)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.pixel_shuffle(x)
+        return x
+
+class UpsamplingBlock(nn.Module):
+    """Block for 4x upsampling using two SubpixelUpsampling modules"""
+    def __init__(self, in_channels):
+        super(UpsamplingBlock, self).__init__()
+        
+        self.upsample1 = SubpixelUpsampling(in_channels)
+        self.upsample2 = SubpixelUpsampling(in_channels)
+        
+    def forward(self, x):
+        # First 2x upsampling
+        x = self.upsample1(x)
+        # Second 2x upsampling
+        x = self.upsample2(x)
+        return x
+
+class SRNetwork(nn.Module):
+    """Super Resolution Network with ESPCN-like backbone"""
+    def __init__(self, in_channels=64, out_channels=3):
+        super(SRNetwork, self).__init__()
+        
+        # Initial feature extraction
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Upsampling blocks for 4x upscaling
+        self.upsampling = UpsamplingBlock(64)
+        
+        # Final convolution for RGB output
+        self.final_conv = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
+        
+    def forward(self, x, bicubic):
+        # Process features
+        x = self.conv_layers(x)
+        
+        # Upsampling blocks for 4x upscaling
+        x = self.upsampling(x)
+        
+        # Final convolution for RGB output
+        x = self.final_conv(x)
+        
+        # Add residual connection with bicubic upsampled input
+        x = x + bicubic
+        
+        return x
+
+class ERSVR(nn.Module):
+    """Real-time Video Super Resolution Network using Recurrent Multi-Branch Dilated Convolutions"""
+    def __init__(self, scale_factor=4):
+        super(ERSVR, self).__init__()
+        
+        self.scale_factor = scale_factor
+        
+        # Feature alignment block
+        self.feature_alignment = FeatureAlignmentBlock(in_channels=9, out_channels=64)
+        
+        # SR network
+        self.sr_network = SRNetwork(in_channels=64, out_channels=3)
+        
+    def forward(self, x):
+        # Input shape: (B, 3, 3, H, W) - batch of 3 RGB frames
+        batch_size, num_frames, channels, height, width = x.shape
+        
+        # Rearrange input to (B, 9, H, W)
+        x = rearrange(x, 'b n c h w -> b (n c) h w')
+        
+        # Extract center frame for residual connection
+        center_frame = x[:, 3:6, :, :]  # RGB channels of center frame
+        
+        # Bicubic upsampling of center frame for residual connection
+        bicubic = F.interpolate(
+            center_frame,
+            scale_factor=self.scale_factor,
+            mode='bicubic',
+            align_corners=False
+        )
+        
+        # Feature alignment
+        features = self.feature_alignment(x)
+        
+        # SR network
+        output = self.sr_network(features, bicubic)
+        
+        return output
+
+# Dataset class
+class VimeoDataset(Dataset):
+    def __init__(self, root_dir, split_list=None, sample_size=None, verbose=True, max_sequences=None):
+        self.root_dir = root_dir
+        self.sequences = []
+        self.verbose = verbose
+        
+        if verbose:
+            print(f"Initializing dataset from {self.root_dir}")
+            print(f"Using split list: {split_list if split_list else 'None'}")
+            print(f"Max sequences limit: {max_sequences if max_sequences else 'None'}")
+
+        # Check if root directory exists
+        if not os.path.exists(self.root_dir):
+            raise FileNotFoundError(f"Dataset directory not found: {self.root_dir}")
+        
+        # Find the actual sequence directory
+        seq_dir = self._find_sequence_directory()
+        self.seq_dir = seq_dir
+            
+        if split_list is not None and os.path.exists(split_list):
+            self._load_from_split_list(split_list, seq_dir, max_sequences)
+        else:
+            self._scan_directory_structure(seq_dir, max_sequences)
+        
+        if verbose:
+            print(f"Found {len(self.sequences)} valid sequences")
+        
+        if sample_size is not None and sample_size < len(self.sequences):
+            if verbose:
+                print(f"Using random subset of {sample_size} sequences")
+            self.sequences = random.sample(self.sequences, sample_size)
+    
+    def _find_sequence_directory(self):
+        """Find the directory containing video sequences"""
+        if self.verbose:
+            print(f"Searching for sequences in: {self.root_dir}")
+            if os.path.exists(self.root_dir):
+                contents = os.listdir(self.root_dir)
+                print(f"Root directory contents: {contents[:10]}...")
+            else:
+                print(f"Root directory does not exist: {self.root_dir}")
+        
+        # Check for vimeo_settuplet_1 directory
+        vimeo_septuplet = os.path.join(self.root_dir, "vimeo_settuplet_1")
+        if os.path.exists(vimeo_septuplet) and os.path.isdir(vimeo_septuplet):
+            sequences_dir = os.path.join(vimeo_septuplet, "sequences")
+            if os.path.exists(sequences_dir) and os.path.isdir(sequences_dir):
+                if self.verbose:
+                    print(f"Found sequences directory: {sequences_dir}")
+                return sequences_dir
+            if self.verbose:
+                print(f"Found vimeo_septuplet directory: {vimeo_septuplet}")
+            return vimeo_septuplet
+        
+        # Try to find a "sequence" or "sequences" directory
+        for dirname in ["sequence", "sequences"]:
+            candidate = os.path.join(self.root_dir, dirname)
+            if os.path.exists(candidate) and os.path.isdir(candidate):
+                if self.verbose:
+                    print(f"Found {dirname} directory: {candidate}")
+                return candidate
+        
+        # If still not found, look for any directory that might contain sequences
+        if os.path.exists(self.root_dir):
+            subdirs = [d for d in os.listdir(self.root_dir) if os.path.isdir(os.path.join(self.root_dir, d))]
+            for subdir in subdirs:
+                subdir_path = os.path.join(self.root_dir, subdir)
+                # Check if this directory has the expected structure
+                if self._has_video_structure(subdir_path):
+                    if self.verbose:
+                        print(f"Found potential sequence directory: {subdir_path}")
+                    return subdir_path
+        
+        if self.verbose:
+            print(f"Using root directory as sequence directory: {self.root_dir}")
+        return self.root_dir
+    
+    def _has_video_structure(self, directory):
+        """Check if a directory has video sequence structure"""
+        try:
+            contents = os.listdir(directory)
+            # Look for numbered directories or sequence files
+            has_numbered_dirs = any(item.isdigit() for item in contents if os.path.isdir(os.path.join(directory, item)))
+            has_image_files = any(item.lower().endswith(('.png', '.jpg', '.jpeg')) for item in contents)
+            return has_numbered_dirs or has_image_files
+        except:
+            return False
+    
+    def _load_from_split_list(self, split_list, seq_dir, max_sequences=None):
+        """Load sequences from split list file"""
+        with open(split_list, 'r') as f:
+            lines = f.readlines()
+            if max_sequences:
+                lines = lines[:max_sequences]
+                if self.verbose:
+                    print(f"Limiting to first {max_sequences} sequences from split list")
+            
+            for line in lines:
+                seq = line.strip()
+                seq_path = os.path.join(seq_dir, seq)
+                if os.path.exists(seq_path) and self._check_sequence_valid(seq_path):
+                    self.sequences.append(seq_path)
+    
+    def _scan_directory_structure(self, seq_dir, max_sequences=None):
+        """Scan directory structure for valid sequences"""
+        if self._check_sequence_valid(seq_dir):
+            self.sequences.append(seq_dir)
+        else:
+            content = os.listdir(seq_dir)
+            subdirs = [d for d in content if os.path.isdir(os.path.join(seq_dir, d))]
+            
+            numeric_dirs = [d for d in subdirs if d.isdigit() or (len(d) >= 5 and d[:5].isdigit())]
+            
+            if numeric_dirs:
+                count = 0
+                for dir_name in numeric_dirs:
+                    if max_sequences and count >= max_sequences:
+                        if self.verbose:
+                            print(f"Reached max sequences limit: {max_sequences}")
+                        break
+                        
+                    dir_path = os.path.join(seq_dir, dir_name)
+                    if self._check_sequence_valid(dir_path):
+                        self.sequences.append(dir_path)
+                        count += 1
+                    else:
+                        for subdir in os.listdir(dir_path):
+                            if max_sequences and count >= max_sequences:
+                                break
+                            subdir_path = os.path.join(dir_path, subdir)
+                            if os.path.isdir(subdir_path) and self._check_sequence_valid(subdir_path):
+                                self.sequences.append(subdir_path)
+                                count += 1
+            else:
+                self._scan_for_sequences(seq_dir, depth=0, max_depth=3, max_sequences=max_sequences)
+    
+    def _scan_for_sequences(self, directory, depth=0, max_depth=3, max_sequences=None):
+        """Recursively scan for valid sequences up to max_depth"""
+        if depth > max_depth:
+            return
+        
+        if max_sequences and len(self.sequences) >= max_sequences:
+            return
+        
+        if self._check_sequence_valid(directory):
+            self.sequences.append(directory)
+            return
+        
+        try:
+            for item in os.listdir(directory):
+                if max_sequences and len(self.sequences) >= max_sequences:
+                    break
+                item_path = os.path.join(directory, item)
+                if os.path.isdir(item_path):
+                    self._scan_for_sequences(item_path, depth + 1, max_depth, max_sequences)
+        except Exception as e:
+            if self.verbose:
+                print(f"Error scanning {directory}: {e}")
+    
+    def _check_sequence_valid(self, seq_path):
+        """Check if a sequence contains all required frame files"""
+        patterns = [
+            [f'im{i}.png' for i in range(1, 4)],
+            [f'im{i:02d}.png' for i in range(1, 4)],
+            [f'frame{i:03d}.png' for i in range(1, 4)],
+            [f'{i:02d}.png' for i in range(1, 4)]
+        ]
+        
+        for pattern in patterns:
+            valid = True
+            for frame_name in pattern:
+                frame_path = os.path.join(seq_path, frame_name)
+                if not os.path.isfile(frame_path):
+                    valid = False
+                    break
+            if valid:
+                self.file_pattern = pattern
+                return True
+                
+        return False
+
+    def __len__(self):
+        return max(1, len(self.sequences))
+    
+    def __getitem__(self, idx):
+        if len(self.sequences) == 0:
+            dummy_lr = torch.zeros(3, 3, 256, 256)
+            dummy_hr = torch.zeros(3, 256, 256)
+            return dummy_lr, dummy_hr
+        
+        if idx >= len(self.sequences):
+            idx = idx % len(self.sequences)
+            
+        seq_path = self.sequences[idx]
+        frames = []
+        
+        try:
+            if not hasattr(self, 'file_pattern'):
+                self._check_sequence_valid(seq_path)
+            
+            if not hasattr(self, 'file_pattern'):
+                self.file_pattern = [f'im{i}.png' for i in range(1, 4)]
+            
+            for frame_name in self.file_pattern:
+                frame_path = os.path.join(seq_path, frame_name)
+                frame = cv2.imread(frame_path)
+                if frame is None:
+                    raise ValueError(f"Failed to read image: {frame_path}")
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = frame.astype(np.float32) / 255.0
+                frames.append(frame)
+            
+            lr_frames = np.stack(frames, axis=0)
+            lr_frames = np.transpose(lr_frames, (3, 0, 1, 2))
+            
+            hr_frame = frames[1]
+            hr_frame = np.transpose(hr_frame, (2, 0, 1))
+            
+            return torch.from_numpy(lr_frames), torch.from_numpy(hr_frame)
+            
+        except Exception as e:
+            print(f"Error loading sequence {seq_path}: {e}")
+            if len(self.sequences) > 1:
+                return self.__getitem__(random.randint(0, len(self.sequences) - 1))
+            else:
+                dummy_lr = torch.zeros(3, 3, 256, 256)
+                dummy_hr = torch.zeros(3, 256, 256)
+                return dummy_lr, dummy_hr
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
