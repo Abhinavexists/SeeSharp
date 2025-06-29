@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERSVR Super Resolution Testing</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .upload-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 20px;
+            transition: border-color 0.3s;
+        }
+        .upload-area:hover {
+            border-color: #007bff;
+        }
+        .upload-area.dragover {
+            border-color: #007bff;
+            background-color: #f0f8ff;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .btn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .results {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .result-item {
+            text-align: center;
+        }
+        .result-item img {
+            max-width: 100%;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metrics {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ERSVR Super Resolution Testing</h1>
+        <p>Upload an image to test the Enhanced Real-time Super Resolution Video model</p>
+        <p><strong>4x Scale Factor</strong> | Trained on Video Sequences</p>
+    </div>
+
+    <div class="upload-section">
+        <h2>Upload Test Image</h2>
+        <div class="upload-area" id="uploadArea">
+            <p>Click to select an image or drag and drop here</p>
+            <input type="file" id="imageInput" accept="image/*" style="display: none;">
+            <p style="font-size: 12px; color: #666; margin-top: 10px;">
+                Supported formats: JPG, PNG, GIF | Max size: 16MB
+            </p>
+        </div>
+        <button class="btn" id="uploadBtn" disabled>Process Image</button>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processing your image with ERSVR model...</p>
+        </div>
+    </div>
+
+    <div class="results" id="results" style="display: none;">
+        <h2>Super Resolution Results</h2>
+        <div class="metrics" id="metrics"></div>
+        <div class="result-grid" id="resultGrid"></div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const imageInput = document.getElementById('imageInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const resultGrid = document.getElementById('resultGrid');
+        const metrics = document.getElementById('metrics');
+
+        // File input handling
+        uploadArea.addEventListener('click', () => imageInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                imageInput.files = files;
+                handleFileSelect();
+            }
+        });
+
+        imageInput.addEventListener('change', handleFileSelect);
+
+        function handleFileSelect() {
+            const file = imageInput.files[0];
+            if (file) {
+                uploadArea.innerHTML = `<p>Selected: ${file.name}</p>`;
+                uploadBtn.disabled = false;
+            }
+        }
+
+        uploadBtn.addEventListener('click', processImage);
+
+        async function processImage() {
+            const file = imageInput.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('image', file);
+
+            uploadBtn.disabled = true;
+            loading.style.display = 'block';
+            results.style.display = 'none';
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    displayResults(data);
+                } else {
+                    showError(data.error || 'Processing failed');
+                }
+            } catch (error) {
+                showError('Network error: ' + error.message);
+            } finally {
+                loading.style.display = 'none';
+                uploadBtn.disabled = false;
+            }
+        }
+
+        function displayResults(data) {
+            // Display metrics
+            metrics.innerHTML = `
+                <h3>Processing Metrics</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+                    <div><strong>Input Size:</strong> ${data.metrics.input_size}</div>
+                    <div><strong>Output Size:</strong> ${data.metrics.output_size}</div>
+                    <div><strong>Scale Factor:</strong> ${data.metrics.scale_factor}</div>
+                    <div><strong>PSNR vs Bicubic:</strong> ${data.metrics.psnr_improvement}</div>
+                </div>
+            `;
+
+            // Display images
+            resultGrid.innerHTML = `
+                <div class="result-item">
+                    <h3>Input (Low Resolution)</h3>
+                    <img src="${data.input_image}" alt="Input">
+                </div>
+                <div class="result-item">
+                    <h3>Bicubic Upsampling</h3>
+                    <img src="${data.bicubic_image}" alt="Bicubic">
+                </div>
+                <div class="result-item">
+                    <h3>ERSVR Super Resolution</h3>
+                    <img src="${data.sr_image}" alt="Super Resolution">
+                </div>
+            `;
+
+            results.style.display = 'block';
+        }
+
+        function showError(message) {
+            results.innerHTML = `<div class="error">Error: ${message}</div>`;
+            results.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
