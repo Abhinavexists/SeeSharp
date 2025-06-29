@@ -46,4 +46,4 @@ class ERSVR(nn.Module):
             print(f"Output shape: {output.shape}, Bicubic shape: {bicubic.shape}")
             raise ValueError("Output and bicubic tensors must have the same dimensions")
         
-        return output 
+        return output

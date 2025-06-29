@@ -28,8 +28,6 @@ class UpsamplingBlock(nn.Module):
         self.upsample2 = SubpixelUpsampling(in_channels)
         
     def forward(self, x):
-        # First 2x upsampling
         x = self.upsample1(x)
-        # Second 2x upsampling
         x = self.upsample2(x)
-        return x 
+        return x
