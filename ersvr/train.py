@@ -1,6 +1,3 @@
-# ERSVR: Real-time Video Super Resolution for Kaggle
-# Combines training and inference functionality in a single script
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,69 +10,47 @@ import numpy as np
 import cv2
 import random
 import argparse
-import time
 from einops import rearrange
 
-# Check if running on Kaggle
-KAGGLE = os.environ.get('KAGGLE_KERNEL_RUN_TYPE', '')
-if KAGGLE:
-    # In Kaggle, the dataset is usually in a subdirectory of /kaggle/input
-    # Let's find the actual dataset directory
-    base_input = '/kaggle/input'
-    if os.path.exists(base_input):
-        input_dirs = [d for d in os.listdir(base_input) if os.path.isdir(os.path.join(base_input, d))]
-        if input_dirs:
-            # Use the first directory found, or look for common dataset names
-            for common_name in ['vimeo90k', 'vimeo-90k', 'video-dataset', 'dataset']:
-                if common_name in input_dirs:
-                    DATA_PATH = os.path.join(base_input, common_name)
-                    break
-            else:
-                DATA_PATH = os.path.join(base_input, input_dirs[0])
-        else:
-            DATA_PATH = base_input
-    else:
-        DATA_PATH = base_input
-    OUTPUT_PATH = '/kaggle/working'
-    print(f"Running on Kaggle, data path: {DATA_PATH}")
-else:
-    DATA_PATH = './archive'
-    OUTPUT_PATH = './checkpoints'
-    print("Running locally")
 
-# Model components
+def parse_args():
+    parser = argparse.ArgumentParser(description='ERSVR Training Script')
+    parser.add_argument('--data_path', type=str, default='./archive', help='Path to the dataset directory (default: ./archive)')
+    parser.add_argument('--output_path', type=str, default='./checkpoints', help='Path to save checkpoints (default: ./checkpoints)')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training (default: 2)')
+    parser.add_argument('--num_epochs', type=int, default=800, help='Number of training epochs (default: 800)')
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
+    parser.add_argument('--num_workers', type=int, default=2, help='Number of dataloader workers (default: 2)')
+    parser.add_argument('--gpu_id', type=int, default=None, help='GPU ID to use (default: auto-select)')
+    parser.add_argument('--max_sequences', type=int, default=None, help='Maximum number of sequences to use for training (default: None)')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
+    parser.add_argument('--tensorboard_dir', type=str, default='runs/ersvr_training', help='TensorBoard log directory (default: runs/ersvr_training)')
+    return parser.parse_args()
+
+
 class MBDModule(nn.Module):
     """Multi-Branch Dilated Convolution Module"""
     def __init__(self, in_channels, out_channels):
         super(MBDModule, self).__init__()
         
-        # Pointwise convolution for channel reduction
         self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         
-        # Parallel dilated convolutions with different dilation rates
         self.dilated_convs = nn.ModuleList([
             nn.Conv2d(out_channels, out_channels, kernel_size=3, 
                      padding=d, dilation=d) for d in [1, 2, 4]
         ])
         
-        # Final 1x1 convolution for feature fusion
         self.fusion = nn.Conv2d(out_channels * 3, out_channels, kernel_size=1)
         
     def forward(self, x):
-        # Pointwise convolution
         x = self.pointwise(x)
         
-        # Apply parallel dilated convolutions
         dilated_outputs = []
         for conv in self.dilated_convs:
             dilated_outputs.append(conv(x))
         
-        # Concatenate all dilated outputs
         x = torch.cat(dilated_outputs, dim=1)
-        
-        # Final fusion
         x = self.fusion(x)
-        
         return x
 
 class FeatureAlignmentBlock(nn.Module):
@@ -83,7 +58,6 @@ class FeatureAlignmentBlock(nn.Module):
     def __init__(self, in_channels=9, out_channels=64):
         super(FeatureAlignmentBlock, self).__init__()
         
-        # Initial feature extraction
         self.conv_layers = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -93,7 +67,6 @@ class FeatureAlignmentBlock(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # MBD module for feature refinement
         self.mbd = MBDModule(out_channels, out_channels)
         
     def forward(self, x):
@@ -125,14 +98,12 @@ class UpsamplingBlock(nn.Module):
     """Block for 4x upsampling using two SubpixelUpsampling modules"""
     def __init__(self, in_channels):
         super(UpsamplingBlock, self).__init__()
-        
+
         self.upsample1 = SubpixelUpsampling(in_channels)
         self.upsample2 = SubpixelUpsampling(in_channels)
         
     def forward(self, x):
-        # First 2x upsampling
         x = self.upsample1(x)
-        # Second 2x upsampling
         x = self.upsample2(x)
         return x
 
@@ -141,7 +112,6 @@ class SRNetwork(nn.Module):
     def __init__(self, in_channels=64, out_channels=3):
         super(SRNetwork, self).__init__()
         
-        # Initial feature extraction
         self.conv_layers = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -163,44 +133,22 @@ class SRNetwork(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # Upsampling blocks for 4x upscaling
-        self.upsampling = UpsamplingBlock(64)
-        
-        # Final convolution for RGB output
+        self.upsampling = UpsamplingBlock(64) # 4x Upsampling
         self.final_conv = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
         
     def forward(self, x, bicubic):
-        # Process features
         x = self.conv_layers(x)
-        
-        # Upsampling blocks for 4x upscaling
         x = self.upsampling(x)
         
-        # Final convolution for RGB output
-        x = self.final_conv(x)
-        
-        # Add residual connection with bicubic upsampled input
-        x = x + bicubic
-        
-        return x
-
 class ERSVR(nn.Module):
     """Real-time Video Super Resolution Network using Recurrent Multi-Branch Dilated Convolutions"""
     def __init__(self, scale_factor=4):
-        super(ERSVR, self).__init__()
-        
+        super(ERSVR, self).__init__()    
         self.scale_factor = scale_factor
-        
-        # Feature alignment block
         self.feature_alignment = FeatureAlignmentBlock(in_channels=9, out_channels=64)
-        
-        # SR network
         self.sr_network = SRNetwork(in_channels=64, out_channels=3)
         
     def forward(self, x):
-        # Input shape: (B, 3, 3, H, W) - batch of 3 RGB frames
-        batch_size, num_frames, channels, height, width = x.shape
-        
         # Rearrange input to (B, 9, H, W)
         x = rearrange(x, 'b n c h w -> b (n c) h w')
         
@@ -215,15 +163,10 @@ class ERSVR(nn.Module):
             align_corners=False
         )
         
-        # Feature alignment
         features = self.feature_alignment(x)
-        
-        # SR network
         output = self.sr_network(features, bicubic)
-        
         return output
 
-# Dataset class
 class VimeoDataset(Dataset):
     def __init__(self, root_dir, split_list=None, sample_size=None, verbose=True, max_sequences=None):
         self.root_dir = root_dir
@@ -235,11 +178,9 @@ class VimeoDataset(Dataset):
             print(f"Using split list: {split_list if split_list else 'None'}")
             print(f"Max sequences limit: {max_sequences if max_sequences else 'None'}")
 
-        # Check if root directory exists
         if not os.path.exists(self.root_dir):
             raise FileNotFoundError(f"Dataset directory not found: {self.root_dir}")
         
-        # Find the actual sequence directory
         seq_dir = self._find_sequence_directory()
         self.seq_dir = seq_dir
             
@@ -266,7 +207,6 @@ class VimeoDataset(Dataset):
             else:
                 print(f"Root directory does not exist: {self.root_dir}")
         
-        # Check for vimeo_settuplet_1 directory
         vimeo_septuplet = os.path.join(self.root_dir, "vimeo_settuplet_1")
         if os.path.exists(vimeo_septuplet) and os.path.isdir(vimeo_septuplet):
             sequences_dir = os.path.join(vimeo_septuplet, "sequences")
@@ -278,7 +218,6 @@ class VimeoDataset(Dataset):
                 print(f"Found vimeo_septuplet directory: {vimeo_septuplet}")
             return vimeo_septuplet
         
-        # Try to find a "sequence" or "sequences" directory
         for dirname in ["sequence", "sequences"]:
             candidate = os.path.join(self.root_dir, dirname)
             if os.path.exists(candidate) and os.path.isdir(candidate):
@@ -286,12 +225,11 @@ class VimeoDataset(Dataset):
                     print(f"Found {dirname} directory: {candidate}")
                 return candidate
         
-        # If still not found, look for any directory that might contain sequences
         if os.path.exists(self.root_dir):
             subdirs = [d for d in os.listdir(self.root_dir) if os.path.isdir(os.path.join(self.root_dir, d))]
             for subdir in subdirs:
                 subdir_path = os.path.join(self.root_dir, subdir)
-                # Check if this directory has the expected structure
+                
                 if self._has_video_structure(subdir_path):
                     if self.verbose:
                         print(f"Found potential sequence directory: {subdir_path}")
@@ -305,7 +243,6 @@ class VimeoDataset(Dataset):
         """Check if a directory has video sequence structure"""
         try:
             contents = os.listdir(directory)
-            # Look for numbered directories or sequence files
             has_numbered_dirs = any(item.isdigit() for item in contents if os.path.isdir(os.path.join(directory, item)))
             has_image_files = any(item.lower().endswith(('.png', '.jpg', '.jpeg')) for item in contents)
             return has_numbered_dirs or has_image_files
@@ -468,7 +405,6 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
                 optimizer.zero_grad()
                 sr_output = model(lr_frames)  # (B, 3, H*4, W*4)
                 
-                # Upsample target to match output size
                 hr_frames = F.interpolate(
                     hr_frames,
                     scale_factor=4,
@@ -476,14 +412,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
                     align_corners=False
                 )
                 
-                # Calculate loss
                 loss = criterion(sr_output, hr_frames)
-                
-                # Backward pass
                 loss.backward()
                 optimizer.step()
                 
-                # Update progress
                 total_loss += loss.item()
                 pbar.set_postfix({'loss': total_loss / (batch_idx + 1)})
             except Exception as e:
@@ -505,8 +437,7 @@ def calculate_ssim(img1, img2, window_size=11, sigma=1.5, L=1.0):
     Calculate the Structural Similarity Index Measure (SSIM) between two images
     Both inputs should be in range [0, 1]
     """
-    # Convert inputs to correct dimensions if necessary
-    if img1.dim() == 4 and img1.size(0) == 1:  # Remove batch dim if batch size is 1
+    if img1.dim() == 4 and img1.size(0) == 1:
         img1 = img1.squeeze(0)
         img2 = img2.squeeze(0)
     
@@ -516,8 +447,7 @@ def calculate_ssim(img1, img2, window_size=11, sigma=1.5, L=1.0):
     
     # Create a Gaussian kernel
     window = _create_window(window_size, sigma, img1.size(0)).to(img1.device)
-    
-    # Mean of img1, img2
+
     mu1 = F.conv2d(img1.unsqueeze(0), window, padding=window_size//2, groups=img1.size(0))
     mu2 = F.conv2d(img2.unsqueeze(0), window, padding=window_size//2, groups=img2.size(0))
     
@@ -525,7 +455,6 @@ def calculate_ssim(img1, img2, window_size=11, sigma=1.5, L=1.0):
     mu2_sq = mu2.pow(2)
     mu1_mu2 = mu1 * mu2
     
-    # Variance of img1, img2
     sigma1_sq = F.conv2d(img1.unsqueeze(0) * img1.unsqueeze(0), window, padding=window_size//2, groups=img1.size(0)) - mu1_sq
     sigma2_sq = F.conv2d(img2.unsqueeze(0) * img2.unsqueeze(0), window, padding=window_size//2, groups=img2.size(0)) - mu2_sq
     sigma12 = F.conv2d(img1.unsqueeze(0) * img2.unsqueeze(0), window, padding=window_size//2, groups=img1.size(0)) - mu1_mu2
@@ -562,17 +491,12 @@ def calculate_motion_consistency(sr_batch, hr_batch):
         Average motion consistency score
     """
     if sr_batch.size(0) < 2 or hr_batch.size(0) < 2:
-        # Need at least 2 frames to calculate motion
         return 0.0
     
-    # Calculate frame differences for both SR and HR sequences
     sr_diffs = torch.abs(sr_batch[1:] - sr_batch[:-1])
     hr_diffs = torch.abs(hr_batch[1:] - hr_batch[:-1])
     
-    # Calculate difference in motion patterns
     motion_diff = torch.abs(sr_diffs - hr_diffs)
-    
-    # Average over all dimensions
     consistency_score = motion_diff.mean().item()
     
     # Convert to a 0-1 score where 1 is best (perfect consistency)
@@ -583,7 +507,6 @@ def calculate_motion_consistency(sr_batch, hr_batch):
 
 def calculate_metrics(sr_output, hr_frames):
     """Calculate various image quality metrics between SR output and HR frames"""
-    # Ensure inputs are in the right shape and range
     psnr_val = calculate_psnr(sr_output, hr_frames)
     ssim_val = calculate_ssim(sr_output, hr_frames)
     
@@ -622,7 +545,6 @@ def validate(model, dataloader, criterion, device):
             loss = criterion(sr_output, hr_frames)
             total_loss += loss.item()
             
-            # Calculate metrics for each image in batch
             for i in range(sr_output.size(0)):
                 batch_metrics = calculate_metrics(sr_output[i], hr_frames[i])
                 for k, v in batch_metrics.items():
@@ -630,31 +552,25 @@ def validate(model, dataloader, criterion, device):
             
             samples_count += sr_output.size(0)
     
-    # Average the metrics
     for k in metrics:
         metrics[k] /= samples_count
     
-    # Add loss to metrics
     metrics['loss'] = total_loss / len(dataloader)
-    
     return metrics
 
-def check_dataset_structure(archive_path):
+def check_dataset_structure(data_path):
     """Check and analyze the dataset structure"""
     print(f"\n--- Dataset Structure Analysis ---")
     
-    # Check if archive folder exists
-    if not os.path.exists(archive_path):
-        print(f"ERROR: {archive_path} does not exist!")
+    if not os.path.exists(data_path):
+        print(f"ERROR: {data_path} does not exist!")
         return
     
-    # List contents of archive folder
-    print(f"Contents of {archive_path}:")
-    archive_contents = os.listdir(archive_path)
-    print(f"Found {len(archive_contents)} items: {archive_contents[:10]}...")
+    print(f"Contents of {data_path}:")
+    data_contents = os.listdir(data_path)
+    print(f"Found {len(data_contents)} items: {data_contents[:10]}...")
     
-    # Check if sequence folder exists
-    sequence_path = os.path.join(archive_path, 'sequence')
+    sequence_path = os.path.join(data_path, 'sequences')
     if os.path.exists(sequence_path):
         print(f"Found sequence folder at {sequence_path}")
         
@@ -676,9 +592,8 @@ def check_dataset_structure(archive_path):
                 files = os.listdir(first_subseq_path)
                 print(f"Sub-sequence {first_seq}/{first_subseq} contains files: {files}")
     
-    # Check for split lists
-    train_list = os.path.join(archive_path, 'sep_trainlist.txt')
-    test_list = os.path.join(archive_path, 'sep_testlist.txt')
+    train_list = os.path.join(data_path, 'sep_trainlist.txt')
+    test_list = os.path.join(data_path, 'sep_testlist.txt')
     
     if os.path.exists(train_list):
         with open(train_list, 'r') as f:
@@ -698,78 +613,97 @@ def check_dataset_structure(archive_path):
     
     print("--- End of Dataset Analysis ---\n")
 
+def setup_device(gpu_id=None):
+    """Setup the computing device"""
+    if torch.cuda.is_available():
+        print("Available GPUs:")
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+        
+        if gpu_id is not None and gpu_id < torch.cuda.device_count():
+            torch.cuda.set_device(gpu_id)
+            device = torch.device(f'cuda:{gpu_id}')
+            print(f"Using specified GPU {gpu_id}: {torch.cuda.get_device_name(gpu_id)}")
+        elif torch.cuda.device_count() > 1:
+            torch.cuda.set_device(1)  # Use GPU 1 if available and no specific GPU specified
+            device = torch.device('cuda:1')
+            print(f"Using GPU 1: {torch.cuda.get_device_name(1)}")
+        else:
+            device = torch.device('cuda:0')
+            print(f"Using GPU 0: {torch.cuda.get_device_name(0)}")
+        
+        torch.cuda.empty_cache()
+    else:
+        device = torch.device('cpu')
+        print("CUDA not available, using CPU")
+    
+    return device
+
 def main():
-    # Check available GPUs
-    print("Available GPUs:")
-    for i in range(torch.cuda.device_count()):
-        print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+    args = parse_args()
     
-    # Select appropriate GPU
-    if torch.cuda.device_count() > 1:
-        torch.cuda.set_device(1)  # Use GPU 1 if available
+    print(f"ERSVR Training Script")
+    print(f"Data path: {args.data_path}")
+    print(f"Output path: {args.output_path}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Number of epochs: {args.num_epochs}")
+    print(f"Learning rate: {args.learning_rate}")
     
-    # Analyze dataset structure
-    archive_path = 'archive'  # Path to your dataset folder
-    check_dataset_structure(archive_path)
+    device = setup_device(args.gpu_id)
+    check_dataset_structure(args.data_path)
     
-    # Run dataset test first to validate the dataset
     try:
         print("\nRunning dataset test to validate structure...")
         import test_dataset
-        test_dataset.test_data_loading(archive_path)
+        test_dataset.test_data_loading(args.data_path)
     except ImportError:
         print("Could not import test_dataset module. Skipping validation test.")
     
-    # Hyperparameters
-    batch_size = 2  # Reduced batch size
-    num_epochs = 800
-    learning_rate = 1e-3
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    os.makedirs(args.output_path, exist_ok=True)
     
-    print(f"Using device: {device}")
-    if torch.cuda.is_available():
-        print(f"Current GPU: {torch.cuda.current_device()}")
-        print(f"GPU name: {torch.cuda.get_device_name()}")
-    
-    # Clear GPU memory
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # Initialize model
     model = ERSVR(scale_factor=4).to(device)
-    
-    # Loss function and optimizer
+
     criterion = nn.L1Loss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999))
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
     
-    # Make sure checkpoints directory exists
-    os.makedirs('checkpoints', exist_ok=True)
+    start_epoch = 0
     
-    # Initialize data loaders with reduced num_workers
-    train_list_path = os.path.join(archive_path, 'sep_trainlist.txt')
-    test_list_path = os.path.join(archive_path, 'sep_testlist.txt')
+    # Resume from checkpoint if specified
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print(f"Loading checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume, map_location=device)
+            start_epoch = checkpoint['epoch'] + 1
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print(f"Resumed from epoch {start_epoch}")
+        else:
+            print(f"No checkpoint found at '{args.resume}'")
     
-    # Check if split lists exist, otherwise use the entire dataset
+    # Initialize data loaders
+    train_list_path = os.path.join(args.data_path, 'sep_trainlist.txt')
+    test_list_path = os.path.join(args.data_path, 'sep_testlist.txt')
+    
     use_split_list = os.path.exists(train_list_path) and os.path.exists(test_list_path)
     
     if use_split_list:
         print("Using train/test split lists")
         train_loader = DataLoader(
-            VimeoDataset(archive_path, split_list=train_list_path),
-            batch_size=batch_size,
+            VimeoDataset(args.data_path, split_list=train_list_path, max_sequences=args.max_sequences),
+            batch_size=args.batch_size,
             shuffle=True,
-            num_workers=2
+            num_workers=args.num_workers
         )
         
         val_loader = DataLoader(
-            VimeoDataset(archive_path, split_list=test_list_path),
-            batch_size=batch_size,
+            VimeoDataset(args.data_path, split_list=test_list_path, max_sequences=args.max_sequences//10 if args.max_sequences else None),
+            batch_size=args.batch_size,
             shuffle=False,
-            num_workers=2
+            num_workers=args.num_workers
         )
     else:
         print("WARNING: Split lists not found. Using entire dataset.")
-        all_dataset = VimeoDataset(archive_path)
+        all_dataset = VimeoDataset(args.data_path, max_sequences=args.max_sequences)
         
         # Split dataset manually (90% train, 10% val)
         train_size = int(0.9 * len(all_dataset))
@@ -781,31 +715,27 @@ def main():
         
         train_loader = DataLoader(
             train_dataset,
-            batch_size=batch_size,
+            batch_size=args.batch_size,
             shuffle=True,
-            num_workers=2
+            num_workers=args.num_workers
         )
         
         val_loader = DataLoader(
             val_dataset,
-            batch_size=batch_size,
+            batch_size=args.batch_size,
             shuffle=False,
-            num_workers=2
+            num_workers=args.num_workers
         )
     
-    # TensorBoard writer
-    writer = SummaryWriter('runs/ersvr_training')
+    writer = SummaryWriter(args.tensorboard_dir)
     
-    # Training loop
-    print(f"Starting training for {num_epochs} epochs...")
-    for epoch in range(num_epochs):
-        print(f"\nEpoch {epoch+1}/{num_epochs}")
+    print(f"Starting training for {args.num_epochs} epochs...")
+    for epoch in range(start_epoch, args.num_epochs):
+        print(f"\nEpoch {epoch+1}/{args.num_epochs}")
         
-        # Train
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
         print(f"Training loss: {train_loss:.4f}")
         
-        # Validate
         val_metrics = validate(model, val_loader, criterion, device)
         print(f"Validation loss: {val_metrics['loss']:.4f}, PSNR: {val_metrics['psnr']:.2f}, SSIM: {val_metrics['ssim']:.4f}, MOC: {val_metrics['moc']:.4f}")
         
@@ -816,9 +746,9 @@ def main():
         writer.add_scalar('Metrics/SSIM', val_metrics['ssim'], epoch)
         writer.add_scalar('Metrics/MOC', val_metrics['moc'], epoch)
         
-        # Save checkpoint
         if (epoch + 1) % 50 == 0 or epoch == 0:
             print(f"Saving checkpoint at epoch {epoch+1}")
+            checkpoint_path = os.path.join(args.output_path, f'ersvr_epoch_{epoch+1}.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -828,7 +758,18 @@ def main():
                 'val_psnr': val_metrics['psnr'],
                 'val_ssim': val_metrics['ssim'],
                 'val_moc': val_metrics['moc'],
-            }, f'checkpoints/ersvr_epoch_{epoch+1}.pth')
+            }, checkpoint_path)
+    
+    final_model_path = os.path.join(args.output_path, 'ersvr_final.pth')
+    torch.save({
+        'epoch': args.num_epochs - 1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, final_model_path)
+    print(f"Final model saved to {final_model_path}")
+    
+    writer.close()
+    print("Training completed!")
 
 if __name__ == '__main__':
     main() 
