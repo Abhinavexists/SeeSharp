@@ -524,7 +524,7 @@ def calculate_metrics(sr_output, hr_frames):
 def validate(model, dataloader, criterion, device):
     model.eval()
     total_loss = 0
-    metrics = {'psnr': 0, 'ssim': 0, 'moc': 0}
+    metrics = {'psnr': 0.0, 'ssim': 0.0, 'moc': 0.0}
     samples_count = 0
     
     with torch.no_grad():

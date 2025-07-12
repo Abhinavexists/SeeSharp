@@ -17,8 +17,8 @@ This repository contains a PyTorch implementation of the ERSVR (Enhanced Real-ti
 ### 1. Installation
 
 ```bash
-git clone <https://github.com/Abhinavexists/Unnati>
-cd Unnati
+git clone <https://github.com/Abhinavexists/SeeSharp>
+cd SeeSharp
 
 # Create virtual environment
 python -m venv .venv
