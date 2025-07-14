@@ -2,6 +2,8 @@
 
 This repository contains a PyTorch implementation of the ERSVR (Enhanced Real-time Video Super Resolution) network using recurrent multi-branch dilated convolutions, featuring both a teacher model and an optimized student model for real-time deployment.
 
+[Report](docs/SeeSharp%20Intel_Unnati_Report.pdf)
+
 ## Features
 
 - **Multi-Branch Dilated Convolution (MBD)** module for efficient feature extraction
@@ -181,6 +183,7 @@ The dashboard provides:
 - **Training Progress**: Loss curves showing convergence behavior
 
 #### Sample Test Results
+
 ![ERSVR Test Results](Images/ERSVR_Test_Results_Visualization.png)
 
 Sample comparisons demonstrate:
@@ -214,6 +217,7 @@ python visualize_test_results.py
 ```
 
 This creates:
+
 - `ERSVR_Results_Diagram.png` - Complete system overview
 - `ERSVR_Metrics_Analysis.png` - Detailed performance analysis
 - `ERSVR_Metrics_Dashboard.png` - Performance metrics dashboard
@@ -248,8 +252,8 @@ If you use this implementation in your research, please cite the original paper:
 ```bibtex
 @article{ersvr2021,
   title={Real-time video super resolution network using recurrent multi-branch dilated convolutions},
-  author={Anirudh Tunga and Radhakrishna Bhat and Santhosh D. V. and Rashmi K. P. and Vinutha},
-  journal={Journal Name},
+  author={Zeng, Yubin, Zhijiao Xiao, Kwok-Wai Hung, and Simon Lui},
+  journal={Signal Processing: Image Communication 93 (2021): 116167},
   year={2021}
 }
 ```
