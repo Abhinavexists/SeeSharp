@@ -32,3 +32,12 @@ class UpsamplingBlock(nn.Module):
         x = self.upsample1(x)
         x = self.upsample2(x)
         return x
+
+
+# This is how subpixel upsampling works
+
+# Input: [1, 64, 32, 32]           # Low-res features
+#   ↓
+# Upsample1: [1, 64, 64, 64]       # First 2× upsampling
+#   ↓
+# Upsample2: [1, 64, 128, 128]     # Second 2× upsampling (4× total)

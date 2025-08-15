@@ -4,7 +4,8 @@ from .upsampling import UpsamplingBlock
 
 
 class SRNetwork(nn.Module):
-    """Super Resolution Network with ESPCN-like backbone"""
+    """Super Resolution Network with ESPCN-like backbone
+    ESPCN (Efficient Sub-Pixel Convolutional Neural Network) architecture with residual learning"""
 
     def __init__(self, in_channels=64, out_channels=3):
         super(SRNetwork, self).__init__()

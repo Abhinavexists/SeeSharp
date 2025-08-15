@@ -29,6 +29,17 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.relu(x)
         return x
 
+# For convolution output calculation:
+# Output Size = (Input Size - Kernel Size + 2 × Padding) / Stride + 1
+
+# For stride calculation (when you know desired output):
+# Stride = (Input Size - Kernel Size + 2 × Padding) / (Output Size - 1)
+
+# For simple downsampling:
+# Stride = Input Size / Desired Output Size
+
+# Output Height = (H - 3 + 2 × 1) / 1 + 1 = (H - 3 + 2) / 1 + 1 = H
+# Output Width = (W - 3 + 2 × 1) / 1 + 1 = (W - 3 + 2) / 1 + 1 = W
 
 class StudentSRNet(nn.Module):
     """
@@ -42,7 +53,7 @@ class StudentSRNet(nn.Module):
         super().__init__()
         self.scale_factor = scale_factor
         self.input_conv = nn.Conv2d(9, 16, 3, padding=1)
-        self.block1 = DepthwiseSeparableConv(16, 32)
+        self.block1 = DepthwiseSeparableConv(16, 32)  
         self.block2 = DepthwiseSeparableConv(32, 32)
         self.block3 = DepthwiseSeparableConv(32, 16)
         self.upsample1 = nn.Sequential(
