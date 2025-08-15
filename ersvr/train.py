@@ -8,10 +8,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from einops import rearrange
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+from ersvr.models.ersvr import ERSVR
 
 
 def parse_args():
@@ -71,158 +72,6 @@ def parse_args():
         help="TensorBoard log directory (default: runs/ersvr_training)",
     )
     return parser.parse_args()
-
-
-class MBDModule(nn.Module):
-    """Multi-Branch Dilated Convolution Module"""
-
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-
-        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-
-        self.dilated_convs = nn.ModuleList(
-            [
-                nn.Conv2d(
-                    out_channels, out_channels, kernel_size=3, padding=d, dilation=d
-                )
-                for d in [1, 2, 4]
-            ]
-        )
-
-        self.fusion = nn.Conv2d(out_channels * 3, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        x = self.pointwise(x)
-
-        dilated_outputs = []
-        for conv in self.dilated_convs:
-            dilated_outputs.append(conv(x))
-
-        x = torch.cat(dilated_outputs, dim=1)
-        x = self.fusion(x)
-        return x
-
-
-class FeatureAlignmentBlock(nn.Module):
-    """Feature Alignment Block for processing concatenated frames"""
-
-    def __init__(self, in_channels=9, out_channels=64):
-        super().__init__()
-
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-
-        self.mbd = MBDModule(out_channels, out_channels)
-
-    def forward(self, x):
-        # Input shape: (B, 9, H, W) - concatenated frames
-        x = self.conv_layers(x)
-        x = self.mbd(x)
-        return x
-
-
-class SubpixelUpsampling(nn.Module):
-    """Subpixel Upsampling Module using PixelShuffle"""
-
-    def __init__(self, in_channels, scale_factor=2):
-        super().__init__()
-
-        self.scale_factor = scale_factor
-        self.conv = nn.Conv2d(
-            in_channels, in_channels * (scale_factor**2), kernel_size=3, padding=1
-        )
-        self.pixel_shuffle = nn.PixelShuffle(scale_factor)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.pixel_shuffle(x)
-        return x
-
-
-class UpsamplingBlock(nn.Module):
-    """Block for 4x upsampling using two SubpixelUpsampling modules"""
-
-    def __init__(self, in_channels):
-        super().__init__()
-
-        self.upsample1 = SubpixelUpsampling(in_channels)
-        self.upsample2 = SubpixelUpsampling(in_channels)
-
-    def forward(self, x):
-        x = self.upsample1(x)
-        x = self.upsample2(x)
-        return x
-
-
-class SRNetwork(nn.Module):
-    """Super Resolution Network with ESPCN-like backbone"""
-
-    def __init__(self, in_channels=64, out_channels=3):
-        super().__init__()
-
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-
-        self.upsampling = UpsamplingBlock(64)  # 4x Upsampling
-        self.final_conv = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
-
-    def forward(self, x, bicubic):
-        x = self.conv_layers(x)
-        x = self.upsampling(x)
-
-
-class ERSVR(nn.Module):
-    """Real-time Video Super Resolution Network using Recurrent Multi-Branch Dilated Convolutions"""
-
-    def __init__(self, scale_factor=4):
-        super().__init__()
-        self.scale_factor = scale_factor
-        self.feature_alignment = FeatureAlignmentBlock(in_channels=9, out_channels=64)
-        self.sr_network = SRNetwork(in_channels=64, out_channels=3)
-
-    def forward(self, x):
-        # Rearrange input to (B, 9, H, W)
-        x = rearrange(x, "b n c h w -> b (n c) h w")
-
-        # Extract center frame for residual connection
-        center_frame = x[:, 3:6, :, :]  # RGB channels of center frame
-
-        # Bicubic upsampling of center frame for residual connection
-        bicubic = F.interpolate(
-            center_frame,
-            scale_factor=self.scale_factor,
-            mode="bicubic",
-            align_corners=False,
-        )
-
-        features = self.feature_alignment(x)
-        output = self.sr_network(features, bicubic)
-        return output
 
 
 class VimeoDataset(Dataset):
