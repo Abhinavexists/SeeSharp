@@ -8,7 +8,7 @@ class SRNetwork(nn.Module):
     ESPCN (Efficient Sub-Pixel Convolutional Neural Network) architecture with residual learning"""
 
     def __init__(self, in_channels=64, out_channels=3):
-        super(SRNetwork, self).__init__()
+        super().__init__()
 
         self.conv_layers = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),

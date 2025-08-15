@@ -10,7 +10,7 @@ class ERSVR(nn.Module):
     """Real-time Video Super Resolution Network using Recurrent Multi-Branch Dilated Convolutions"""
 
     def __init__(self, scale_factor=4):
-        super(ERSVR, self).__init__()
+        super().__init__()
 
         self.scale_factor = scale_factor
         self.feature_alignment = FeatureAlignmentBlock(in_channels=9, out_channels=64)

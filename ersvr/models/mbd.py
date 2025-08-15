@@ -6,7 +6,7 @@ class MBDModule(nn.Module):
     """Multi-Branch Dilated Convolution Module"""
 
     def __init__(self, in_channels, out_channels):
-        super(MBDModule, self).__init__()
+        super().__init__()
 
         self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 

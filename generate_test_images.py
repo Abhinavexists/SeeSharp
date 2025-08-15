@@ -57,7 +57,7 @@ def generate_pattern_image(name, size=(128, 128)):
             font = ImageFont.truetype(
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20
             )
-        except:
+        except Exception:
             font = ImageFont.load_default()
 
         draw.text((10, 10), "ERSVR", fill=(0, 0, 0), font=font)

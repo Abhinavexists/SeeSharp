@@ -5,7 +5,7 @@ class SubpixelUpsampling(nn.Module):
     """Subpixel Upsampling Module using PixelShuffle"""
 
     def __init__(self, in_channels, scale_factor=2):
-        super(SubpixelUpsampling, self).__init__()
+        super().__init__()
 
         self.scale_factor = scale_factor
         self.conv = nn.Conv2d(
@@ -23,7 +23,7 @@ class UpsamplingBlock(nn.Module):
     """Block for 4x upsampling using two SubpixelUpsampling modules"""
 
     def __init__(self, in_channels):
-        super(UpsamplingBlock, self).__init__()
+        super().__init__()
 
         self.upsample1 = SubpixelUpsampling(in_channels)
         self.upsample2 = SubpixelUpsampling(in_channels)

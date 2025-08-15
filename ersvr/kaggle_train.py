@@ -52,7 +52,7 @@ class MBDModule(nn.Module):
     """Multi-Branch Dilated Convolution Module"""
 
     def __init__(self, in_channels, out_channels):
-        super(MBDModule, self).__init__()
+        super().__init__()
 
         # Pointwise convolution for channel reduction
         self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -92,7 +92,7 @@ class FeatureAlignmentBlock(nn.Module):
     """Feature Alignment Block for processing concatenated frames"""
 
     def __init__(self, in_channels=9, out_channels=64):
-        super(FeatureAlignmentBlock, self).__init__()
+        super().__init__()
 
         # Initial feature extraction
         self.conv_layers = nn.Sequential(
@@ -118,7 +118,7 @@ class SubpixelUpsampling(nn.Module):
     """Subpixel Upsampling Module using PixelShuffle"""
 
     def __init__(self, in_channels, scale_factor=2):
-        super(SubpixelUpsampling, self).__init__()
+        super().__init__()
 
         self.scale_factor = scale_factor
         self.conv = nn.Conv2d(
@@ -136,7 +136,7 @@ class UpsamplingBlock(nn.Module):
     """Block for 4x upsampling using two SubpixelUpsampling modules"""
 
     def __init__(self, in_channels):
-        super(UpsamplingBlock, self).__init__()
+        super().__init__()
 
         self.upsample1 = SubpixelUpsampling(in_channels)
         self.upsample2 = SubpixelUpsampling(in_channels)
@@ -153,7 +153,7 @@ class SRNetwork(nn.Module):
     """Super Resolution Network with ESPCN-like backbone"""
 
     def __init__(self, in_channels=64, out_channels=3):
-        super(SRNetwork, self).__init__()
+        super().__init__()
 
         # Initial feature extraction
         self.conv_layers = nn.Sequential(
@@ -203,7 +203,7 @@ class ERSVR(nn.Module):
     """Real-time Video Super Resolution Network using Recurrent Multi-Branch Dilated Convolutions"""
 
     def __init__(self, scale_factor=4):
-        super(ERSVR, self).__init__()
+        super().__init__()
 
         self.scale_factor = scale_factor
 
@@ -343,7 +343,7 @@ class VimeoDataset(Dataset):
                 item.lower().endswith((".png", ".jpg", ".jpeg")) for item in contents
             )
             return has_numbered_dirs or has_image_files
-        except:
+        except Exception:
             return False
 
     def _load_from_split_list(self, split_list, seq_dir, max_sequences=None):

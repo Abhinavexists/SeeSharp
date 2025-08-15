@@ -108,7 +108,7 @@ def process_video_frames(frames, task_id):
                     print(
                         f"GPU memory ({gpu_memory_gb:.1f}GB) limited, using CPU for video processing"
                     )
-            except:
+            except Exception:
                 use_cpu_for_video = True
 
         # Temporarily switch model to CPU for video processing if needed
@@ -435,7 +435,7 @@ def download_video(task_id):
                     time.sleep(60)
                     if os.path.exists(output_file):
                         os.unlink(output_file)
-                except:
+                except Exception:
                     pass
 
             temp_dir = status.get("temp_dir")
