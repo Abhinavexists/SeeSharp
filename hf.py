@@ -19,7 +19,7 @@ upload_folder(
 
 upload_file(
     repo_id=teacher_repo,
-    path_or_fileobj=str(ROOT / "teacher_models" / "ersvr_best.pth"),
+    path_or_fileobj=str(ROOT / "models" / "teacher_models" / "ersvr_best.pth"),
     path_in_repo="weights/ersvr_best.pth",
     repo_type="model",
 )
@@ -36,7 +36,7 @@ upload_file(
 
 upload_file(
     repo_id=student_repo,
-    path_or_fileobj=str(ROOT / "student_models" / "student_best.pth"),
+    path_or_fileobj=str(ROOT / "models" / "student_models" / "student_best.pth"),
     path_in_repo="weights/student_best.pth",
     repo_type="model",
 )
